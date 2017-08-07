@@ -43,8 +43,6 @@ module Sensu
         data = {}
         # init event and check data
         data[:client] = event[:client][:name]
-        # This will merge : default conf tags < check embedded tags < sensu client/host tag
-        data[:tags] = @influx_conf['tags'].merge(event[:check][:influxdb][:tags]).merge('host' => data[:client])
         # This will merge : check embedded templaes < default conf templates (check embedded templates will take precedence)
         data[:templates] = event[:check][:influxdb][:templates].merge(@influx_conf['templates'])
         data[:filters] = event[:check][:influxdb][:filters].merge(@influx_conf['filters'])
@@ -53,13 +51,36 @@ module Sensu
         event[:check][:influxdb][:strip_metric] ||= @influx_conf['strip_metric']
         data[:strip_metric] = event[:check][:influxdb][:strip_metric]
         data[:duration] = event[:check][:duration]
-        event[:check][:output].split(/\r\n|\n/).each do |line|
-          unless @influx_conf['proxy_mode'] || event[:check][:influxdb][:proxy_mode]
-            data[:line] = line
-            line = parse_line(data)
+        if event[:check].has_key? :outputType
+          case event[:check][:outputType]
+          when /nagios/
+            logger.info('Processing nagios output')
+          when /graphite/
+            logger.info('Processing graphite output')
+          when /atlas/
+            logger.info('Processing atlas output')
+            #This will merge default tags with atlas tags and sensu client/host tag except for the metric name in atlas
+            event[:metrics].each do |metric|
+              ##This is the top level tags and the metric specific tags now
+              data[:tags] = @influx_conf['tags'].merge(event[:check][:output][:tags]).merge(metric[:tags].except(:name)).merge('host' => data[:client])
+              data[:line] = "#{metric[:name]} #{metric[:value]} #{metric[:timestamp]}"
+              line = parse_line(data)
+              @relay.push(event[:check][:influxdb][:database], event[:check][:time_precision], line)
+            end
+          else
+            logger.info('Processing native Influx Output')
+            # This will merge : default conf tags < check embedded tags < sensu client/host tag
+            data[:tags] = @influx_conf['tags'].merge(event[:check][:influxdb][:tags]).merge('host' => data[:client])
+            event[:check][:output].split(/\r\n|\n/).each do |line|
+              unless @influx_conf['proxy_mode'] || event[:check][:influxdb][:proxy_mode]
+                data[:line] = line
+                line = parse_line(data)
+              end
+              @relay.push(event[:check][:influxdb][:database], event[:check][:time_precision], line)
+            end
           end
-          @relay.push(event[:check][:influxdb][:database], event[:check][:time_precision], line)
         end
+
         yield 'ok', 0
       end
 
